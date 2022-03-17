@@ -13,20 +13,16 @@ function gen_circles(r1, r2, r3, num_pts)
     #1. Generate enough random points
     # Split points 50/50
     # First group: Transform random value to [0;r1], assign
-    g1 = rand(num_pts ÷ 2) * r1
-    phase1 = rand(num_pts ÷ 2) * 2π
 
-    X = cat([g1 .* cos.(phase1) g1 .* sin.(phase1)], dims=1)
-
-    g2 = rand(num_pts ÷ 2) .* (r3 - r2) .+ r2
-    phase2 = rand(num_pts ÷ 2) * 2π
-
-    X = cat([X; g2 .* cos.(phase2) g2 .* sin.(phase2)], dims=2)
+    rvs = rand(num_pts);
+    g1 = rvs[1:num_pts ÷ 2] * r1
+    g2 = rvs[num_pts ÷ 2 + 1:end] .* (r3 - r2) .+ r2
+    g = [g1; g2]
+    phase = rand(num_pts) .* 2π
+    X = vcat(g' .* cos.(phase'), g' .* sin.(phase'))
 
     # Add labels
     Y = Flux.onehotbatch([zeros(Int, num_pts ÷ 2); ones(Int, num_pts ÷ 2)], 0:1)
 
-
-
-    return X
+    return X, Y
 end
