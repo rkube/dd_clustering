@@ -4,6 +4,7 @@ using Zygote
 using LinearAlgebra
 using Plots
 using Statistics
+using Random
 
 using dd_clustering
 
@@ -18,7 +19,7 @@ num_pts = 10_000;
 
 num_epochs = 20
 
-batch_size = 128;
+batch_size = 256;
 test_split = 0.8;
 
 # Get the dataset
@@ -28,9 +29,12 @@ X, Y = gen_circles(r1, r2, r3, num_pts);
 X = 2.0 * (X .- minimum(X)) / (maximum(X) - minimum(X)) .- 1.0;
 
 num_test = Int(num_pts * test_split);
+all_idx = shuffle(1:num_pts);
+train_idx = all_idx[1:num_test];
+test_idx = all_idx[num_test + 1:end];
 
-loader_train = DataLoader((data=X[:, 1:num_test], label=Y[:, 1:num_test]), batchsize=batch_size, shuffle=true);
-loader_test = DataLoader((data=X[:, num_test + 1:end], label=Y[:, num_test + 1:end]), batchsize=batch_size, shuffle=true);
+loader_train = DataLoader((data=X[:, train_idx], label=Y[:, train_idx]), batchsize=batch_size, shuffle=true);
+loader_test = DataLoader((data=X[:, test_idx], label=Y[:, test_idx]), batchsize=batch_size, shuffle=true);
 
 model = get_simple_mlp(hidden_dim, num_classes)
 ps = Flux.params(model)
@@ -74,6 +78,10 @@ for epoch in 1:num_epochs
     end
     x_t, y_t = first(loader_test);
     y_pred = model(x_t)[end-1:end, :]
+    label1 = y_pred[1,:] .> y_pred[2,:]
+    p = plot(x_t[1, label1], x_t[2, label1], seriestype=:scatter)
+    plot!(p, x_t[1, .!(label1)], x_t[2, .!(label1)], seriestype=:scatter)
+
     @show epoch, Flux.Losses.binarycrossentropy(1.0 .- y_pred, y_t)
 end
 
