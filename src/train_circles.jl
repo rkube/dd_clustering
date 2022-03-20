@@ -8,9 +8,9 @@ using Statistics
 using Random
 
 using dd_clustering
+ENV["GKSwstype"]="nul"
 
-
-hidden_dim = 128
+hidden_dim = 64
 num_classes = 2
 
 r1 = 0.5
@@ -18,7 +18,7 @@ r2 = 3.0
 r3 = 4.0
 num_pts = 16384;
 
-num_epochs = 5
+num_epochs = 10
 
 batch_size = 256;
 test_split = 0.5;
@@ -34,19 +34,22 @@ all_idx = shuffle(1:num_pts);
 train_idx = all_idx[1:num_test];
 test_idx = all_idx[num_test + 1:end];
 
-loader_train = DataLoader((data=X[:, train_idx], label=Y[:, train_idx]), batchsize=batch_size, shuffle=false);
-loader_test = DataLoader((data=X[:, test_idx], label=Y[:, test_idx]), batchsize=batch_size, shuffle=false);
+loader_train = DataLoader((data=X[:, train_idx], label=Y[:, train_idx]), batchsize=batch_size, shuffle=true);
+loader_test = DataLoader((data=X[:, test_idx], label=Y[:, test_idx]), batchsize=batch_size, shuffle=true);
 
-model = Chain(Dense(2, hidden_dim, tanh, init=Flux.kaiming_uniform),
-              Dense(hidden_dim, hidden_dim, tanh, init=Flux.kaiming_uniform),
-              Dense(hidden_dim, hidden_dim, tanh, init=Flux.kaiming_uniform),
-              Parallel(vcat, x -> x, Chain(Dense(hidden_dim, num_classes, init=Flux.kaiming_uniform), x -> softmax(x)))) |> gpu;
+# Activation function that work well: relu, relu6
+# Activation functions that don't work: tanh, sigmoid
+model = Chain(Dense(2, hidden_dim, relu, init=Flux.kaiming_uniform),
+              Dense(hidden_dim, hidden_dim, relu, init=Flux.kaiming_uniform),
+              Dense(hidden_dim, hidden_dim * 2, relu, init=Flux.kaiming_uniform),
+              Parallel(vcat, x -> x, Chain(Dense(hidden_dim * 2, num_classes, init=Flux.kaiming_uniform), x -> softmax(x)))) |> gpu;
 ps = Flux.params(model)
 
-opt = ADAM(1e-5)
+#opt = Flux.Optimiser(ClipValue(1e-3), ADAM(1e-4))
+opt = ADAM(1e-3)
 
 epoch=0
-xy_grid = hcat(repeat(-1.0:0.01:1.0, outer=201), repeat(-1.0:0.01:1.0, inner=201))' |> gpu;
+xy_grid = hcat(repeat(-1.0:0.025:1.0, outer=81), repeat(-1.0:0.025:1.0, inner=81))' |> gpu;
 y_pred = model(xy_grid)[end-1:end,:];
 label1 = y_pred[1,:] .> y_pred[2,:];
 p = plot(xy_grid[1, label1], xy_grid[2, label1], title="epoch $(epoch)", seriestype=:scatter)
@@ -111,28 +114,28 @@ for epoch in 1:num_epochs
             #     println("A'*A:")
             #     display(triu(A'*A))
             # end
-            @show loss_cs, loss_simp, loss_orth, sigma2
+            @show loss_cs, loss_simp,loss_orth, sigma2
             (loss_cs + loss_simp) / num_classes + loss_orth
         end
         grads = back(one(loss))
 
         Flux.update!(opt, ps, grads)
     end
-    xy_grid = hcat(repeat(-1.0:0.01:1.0, outer=201), repeat(-1.0:0.01:1.0, inner=201))' |> gpu;
-    y_pred = model(xy_grid)[end-1:end,:];
-    label1 = y_pred[1,:] .> y_pred[2,:];
-    p = plot(xy_grid[1, label1], xy_grid[2, label1], title="epoch $(epoch)", seriestype=:scatter);
+    local xy_grid = hcat(repeat(-1.0:0.025:1.0, outer=81), repeat(-1.0:0.025:1.0, inner=81))' |> gpu;
+    local y_pred = model(xy_grid)[end-1:end,:];
+    local label1 = y_pred[1,:] .> y_pred[2,:];
+    local p = plot(xy_grid[1, label1], xy_grid[2, label1], title="epoch $(epoch)", seriestype=:scatter);
     plot!(p, xy_grid[1, .!(label1)], xy_grid[2, .!(label1)], seriestype=:scatter);
     savefig(p, "decisionboundary_epoch$(epoch).png");
 
-    x_t, y_t = first(loader_test);
-    y_pred = model(x_t)[end-1:end, :];
-    label1 = y_pred[1,:] .> y_pred[2,:];
-    p = plot(x_t[1, label1], x_t[2, label1], title="epoch $(epoch)", seriestype=:scatter);
+    local x_t, y_t = first(loader_test);
+    local y_pred = model(x_t)[end-1:end, :];
+    local label1 = y_pred[1,:] .> y_pred[2,:];
+    local p = plot(x_t[1, label1], x_t[2, label1], title="epoch $(epoch)", seriestype=:scatter);
     plot!(p, x_t[1, .!(label1)], x_t[2, .!(label1)], seriestype=:scatter);
     savefig(p, "points_epoch$(epoch).png");
 
-    p = plot(y_pred[1, label1], y_pred[2, label1], title="epoch $(epoch)", seriestype=:scatter);
+    local p = plot(y_pred[1, label1], y_pred[2, label1], title="epoch $(epoch)", seriestype=:scatter);
     plot!(p, y_pred[1, .!(label1)], y_pred[2, .!(label1)], title="epoch $(epoch)", seriestype=:scatter);
     savefig(p, "cluster_assignment$(epoch).png");
 
