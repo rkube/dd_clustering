@@ -16,4 +16,4 @@ data loader as well as `relu` activation functions and `hidden_dim=64` training 
 
 ![Decision boundary of the model](https://github.com/rkube/dd_clustering/blob/main/docs/decision_boundary.gif)
 
-!Cluster assignment in the simplex geometry](https://github.com/rkube/dd_clustering/blob/main/docs/cluster_assignment.gif)
+![Cluster assignment in the simplex geometry](https://github.com/rkube/dd_clustering/blob/main/docs/cluster_assignment.gif)
