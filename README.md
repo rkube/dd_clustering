@@ -1,4 +1,4 @@
-This is a basic implementation of [Deep Divergence-Based Approach to Clustering] (https://arxiv.org/abs/1902.04981).
+This is a basic implementation of [Deep Divergence-Based Approach to Clustering](https://arxiv.org/abs/1902.04981).
 Much of the implementation details follow [this implementation](https://github.com/DanielTrosten/mvc).
 
 
