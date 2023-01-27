@@ -20,6 +20,8 @@ batch_size = 100;
 train_x, train_y = MNIST.traindata(Float32);
 test_x, test_y = MNIST.traindata(Float32);
 
+train_x, train_y = 
+
 train_x = 2f0 * reshape(train_x, 28, 28, 1, :) .- 1f0 |>gpu;
 test_x = 2f0 * reshape(test_x, 28, 28, 1, :) .- 1f0 |> gpu;
 train_y = Flux.onehotbatch(train_y, 0:9) |> gpu;
@@ -32,7 +34,7 @@ model = Chain(Conv((5, 5), 1 => 32, relu),
               MaxPool((2, 2)),
               Conv((5, 5), 32 => 64, relu),
               MaxPool((2, 2)),
-              x -> flatten(x),
+              x -> Flux.flatten(x),
               Dense(4 * 4 * 64, 100, relu),
               BatchNorm(100),
               Parallel(vcat, x -> x,  Chain(Dense(100, num_classes, init=Flux.kaiming_uniform), x -> softmax(x)))) |> gpu;
@@ -69,9 +71,10 @@ for epoch in 1:num_epochs
 
             # Calculate the matrix M.
             xyT = A' * CUDA.CuArray(one(randn(Float32, num_classes, num_classes)))
+            #xyT = A' * one(zeros(Float32, num_classes, num_classes))
             x2 = sum(A.^2, dims=1);
             y2 = ones(num_classes)' |> gpu;
-            M = exp.(-sqrt.(x2' .- 2xyT + repeat(y2, batch_size) .+ eps(eltype(x2))))'
+            M = exp.(-x2' .+ 2xyT - repeat(y2, batch_size))'
 
             # Linear algebra below corresponds to ∑_{i=1:N-1}_{j=i+1:N}  A[i, :]' * K * A[j, :] / √(A[i, :]' * K * A[i, :] * A[j, :]' * K * A[j, :]))
             # See https://github.com/DanielTrosten/mvc/blob/b0a08fc6c75bdb1fae796f82a7cbfb001bf02047/src/lib/loss.py#L30
@@ -94,7 +97,7 @@ for epoch in 1:num_epochs
         end
         grads = back(one(loss))
         Flux.update!(opt, ps, grads)
-        iter += 1;
+        global iter += 1;
     end
 
     # Show class assignments in the batch

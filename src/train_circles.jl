@@ -92,7 +92,7 @@ for epoch in 1:num_epochs
             xyT = A' * CUDA.CuArray([1f0 0f0; 0f0 1f0]);
             x2 = sum(A.^2, dims=1);
             y2 = ones(num_classes)' |> gpu;
-            M = exp.(-sqrt.(x2' .- 2xyT + repeat(y2, batch_size) .+ eps(eltype(x2))))'
+            M = exp.(-x2' .+ 2xyT - repeat(y2, batch_size))'
 
             loss_cs = 0.0f0
             loss_simp = 0.0f0
