@@ -33,67 +33,89 @@ num_frames = 24
 num_classes = 3
 
 #
-num_epochs = 25
-batch_size = 32
+num_epochs = 100
+batch_size = 256
 
 data_norm, tbase_norm = get_shot_data(26327)
 
 # Re-shape data to fit number of samples
-num_samples = size(data_norm)[end] ÷ num_frames
-data_trf = reshape(data_norm[:, :, 1:(num_samples * num_frames)], (24, 8, num_frames, num_samples));
-# Transform into 3d data and scale
-data_trf = Flux.unsqueeze(data_trf, dims=4)
-#data_trf = (data_trf .- minimum(data_trf)) ./ (maximum(data_trf) - minimum(data_trf))
-data_trf = (data_trf .- mean(data_trf)) ./ std(data_trf)
+# num_samples = size(data_norm)[end] ÷ num_frames
+# data_trf = reshape(data_norm[:, :, 1:(num_samples * num_frames)], (24, 8, num_frames, num_samples));
+# # Transform into 3d data and scale
+# data_trf = Flux.unsqueeze(data_trf, dims=4)
+# #data_trf = (data_trf .- minimum(data_trf)) ./ (maximum(data_trf) - minimum(data_trf))
+# data_trf = (data_trf .- mean(data_trf)) ./ std(data_trf)
+
+
+
+
+# Alternative idea:
+num_samples = size(data_norm)[end]
+# Calculate first and second derivative of image time-series manually
+data_deriv1 = data_norm[:, :, 3:end] .- data_norm[:, :, 1:end-2];
+
+data_deriv2 = data_norm[:, :, 1:end-2] .- 2f0 * data_norm[:, :, 2:end-1] .+ data_norm[:, :, 3:end];
+
+# Stack data, first, and second derivative
+data_trf = zeros(Float32, 24, 8, 3, 1, num_samples-2)
+data_trf[:, :, 1, 1, :] = (data_norm[:, :, 2:end-1] .- mean(data_norm)) ./ std(data_norm);
+data_trf[:, :, 2, 1, :] = (data_deriv1 .- mean(data_deriv1)) ./ std(data_deriv1);
+data_trf[:, :, 3, 1, :] = (data_deriv2 .- mean(data_deriv2)) ./ std(data_deriv2);
 
 f, a, p = hist(data_trf[:], bins=-10.0:0.1:1.0)
 save("hist_trf_$(shotnr).png", f)
 
 
-
 labels_truth = get_labels(26327)
 # Transform labels so that each `num_frames` long sample in data_trf has exactly one label
 # This one label is the one that appears most often among the `num_trf`
-labels_truth = reshape(labels_truth[1:(num_samples * num_frames)], (num_frames, num_samples))
-labels_trf = zeros(Int, (1, num_samples))
+#labels_truth = reshape(labels_truth[1:(num_samples * num_frames)], (num_frames, num_samples))
+#labels_trf = zeros(Int, (1, num_samples))
 
 # Replace the num_frames labels for each sample with the one that occurs most frequently
-for ix_s ∈ 1:num_samples
-    # Find counts of labels [0, 1, 2] in the current batch
-    c = counts(labels_truth[:, ix_s], 0:2)
-    labels_trf[ix_s] = (0:2)[argmax(c)]
-end
-labels_true = labels_trf[1, :] .+ 1;
+#for ix_s ∈ 1:num_samples
+#    # Find counts of labels [0, 1, 2] in the current batch
+#    c = counts(labels_truth[:, ix_s], 0:2)
+#    labels_trf[ix_s] = (0:2)[argmax(c)]
+#end
+#labels_true = labels_trf[1, :] .+ 1;
+
+# For stacking derivatives
+labels_true = labels_truth[2:end-1] .+ 1;
 assignments_true = GroundTruthResult(labels_true);
 
 
 # Move data to gpu
 data_trf = data_trf |> gpu;
-labels_trf = labels_trf |> gpu;
-loader = DataLoader((data_trf, labels_trf), batchsize=batch_size, shuffle=true);
+#labels_true = labels_true |> gpu;
+loader = DataLoader((data_trf, labels_true), batchsize=batch_size, shuffle=true);
 
 
-num_fc = 50
+num_fc = 100
 
-model = Chain(Conv((5, 3, 5), 1 => 16, relu),   # 
+model = Chain(Conv((5, 3, 3), 1 => 16, relu),   # 
               BatchNorm(16),
-              MaxPool((2, 1, 2)),
-              Conv((5, 3, 5), 16 => 32, relu),  # 
+              MaxPool((2, 1, 1)),
+              Conv((5, 3, 1), 16 => 32, relu),  # 
               BatchNorm(32),
               #MaxPool((1, 1, 1)),
-              Conv((5, 3, 5), 32 => 32, relu),  # 
+              Conv((5, 3, 1), 32 => 32, relu),  # 
               BatchNorm(32),
               x -> Flux.flatten(x),
-              Dense(2 * 2 * 2 * 32, num_fc, relu),
+              Dense(2 * 2 * 1 * 32, num_fc, relu),
               #Dense(5 * num_fc, num_fc, relu),
               BatchNorm(num_fc),
               Parallel(vcat, x -> x,  Chain( Dense(num_fc, num_classes), x -> softmax(x))));
 model = model |> gpu;
 
 
+#params_cnn = Flux.params(model[1:8])
+#params_fcn = Flux.params(model[9:end])
 
-ps = Flux.params(model);
-opt = ADAM(1e-4)
+ps_all = Flux.params(model);
+opt_all = ADAM(1e-4)
+#opt_cnn = ADAM(1e-4)
+#opt_fcn = ADAM(1e-3)
 σ = 10.0f0;
 
 
@@ -104,12 +126,12 @@ NMI_epoch = zeros(num_epochs)
 
 iter = 1;
 
-λ = 1f-3;
+λ = 1f-4;
 
 for epoch in 1:num_epochs
     for (x,y) in loader
         this_batch = size(x)[end]
-        loss, back = Zygote.pullback(ps) do 
+        loss, back = Zygote.pullback(ps_all) do 
             y_pred = model(x);
             y_hidden = y_pred[1:end - num_classes, :]       # Output of the last fully-connected layer before the softmax
             A = y_pred[end - num_classes + 1:end, :]            # A contains the cluster assignments. Compared to the article, A is transposed
@@ -154,8 +176,9 @@ for epoch in 1:num_epochs
             nom_simp = M * K * M';
             dnom_simp = diag(nom_simp) * diag(nom_simp)';
             #loss_simp =  2f0 / (num_classes * (num_classes - 1)) * sum(triu(nom_simp ./ sqrt.(dnom_cs .+ eps(eltype(dnom_cs))), 1))
-            loss_simp = sum(triu(nom_simp ./ sqrt.(dnom_simp .+ eps(eltype(dnom_cs))), 1)) / num_classes
+            loss_simp = sum(triu(nom_simp ./ sqrt.(dnom_simp .+ eps(eltype(dnom_simp))), 1)) / num_classes
             
+            # Enforces balanced class distribution
             #loss_orth = 2f0 * sum(triu(A' * A, 1)) / (this_batch * (this_batch -1))
             loss_orth = sum(triu(A' * A, 1))
 
@@ -168,7 +191,10 @@ for epoch in 1:num_epochs
             loss_cs + loss_simp + λ * loss_orth
         end
         grads = back(one(loss))
-        Flux.update!(opt, ps, grads)
+        Flux.update!(opt, ps_all, grads)
+        # Optimize CNN and FCN separately
+        #Flux.update!(opt_cnn, params_cnn, grads)
+        #Flux.update!(opt_fcn, params_fcn, grads)
         global iter += 1;
     end
 
