@@ -25,44 +25,85 @@ using kstar_ecei_data
 
 # Instantiate dataset
 shotnr = 26512
-wrap_frames = 16
+wrap_frames = 8
 
 num_epochs = 10     # Training epochs
+lr = 1e-3           # learning rate
+batch_size = 32     # batch size
 λ = 1f-1;           # Weighting of orthogonality loss
 
 trf = GaussianBlur(3)
 my_ds = kstar_ecei_3d(shotnr, wrap_frames, trf)
 
 # Loads training data
-loader = DataLoader(my_ds, batchsize=16, shuffle=true)
-# Load all data
-loader_all = DataLoader(my_ds, batchsize=size(my_ds.features, 4), shuffle=false)
+loader = DataLoader(my_ds, batchsize=batch_size, shuffle=true, partial=false)
 
-(x,y) = first(loader)
+# Load all data, calculate histogram and move to gpu.
+loader_all = DataLoader(my_ds, batchsize=size(my_ds.features, 4), shuffle=false, partial=false)
+# Move vector of all data to gpu. Prediction of this are evaluated during training
+(x_all, labels_true) = first(loader_all)
+assignments_true = GroundTruthResult(labels_true .+ 1)
+x_all = Flux.unsqueeze(x_all, 4);
+f, a, h = hist(x_all[:], bins=-2.5:0.01:2.5);
+save("plots/hist_x_all.png", f)
+x_all = x_all |> gpu;
+
 
 num_fc = 100
 num_classes = 3
 
 
-model = Chain(Conv((5, 3, 3), 1 => 16, relu),   # 
-              BatchNorm(16),
-              Conv((5, 3, 3), 16 => 64, relu),  # 
-              BatchNorm(64),
-              Conv((5, 3, 5), 64 => 64, relu),  # 
-              BatchNorm(64),
-              Conv((5, 1, 5), 64 => 64, relu),
-              BatchNorm(64),                    # 8x2x4x64
+model = Chain(Conv((5, 3, 3), 1 => 16),   # 
+              BatchNorm(16, relu),
+              Conv((7, 3, 3), 16 => 64),  # 
+              BatchNorm(64, relu),
+              # Put in some skip connections
+              SkipConnection(Chain(Conv((3, 3, 3), 64 => 64, pad=(1,1,1)),
+                                   BatchNorm(64, relu),
+                                   Conv((3, 3, 3), 64 => 64, pad=(1,1,1)),
+                                   BatchNorm(64, relu)),
+                             +),
+              # reduce size from (14, 4, 4) to (8, 2,2)
+              Conv((7, 3, 3), 64 => 64),
+              SkipConnection(Chain(Conv((3, 3, 3), 64 => 64, pad=(1,1,1)),
+                                   BatchNorm(64, relu),
+                                   Conv((3, 3, 3), 64 => 64, pad=(1,1,1)),
+                                   BatchNorm(64, relu)),
+                             +),
+
+              BatchNorm(64, relu),
+              Conv((5, 1, 1), 64 => 64),
               x -> Flux.flatten(x),
-              Dense(8 * 2 * 4 * 64, num_fc, relu),
+              Dense(4 * 2 * 2 * 64, num_fc),
               #Dense(5 * num_fc, num_fc, relu),
-              #BatchNorm(num_fc),
+              BatchNorm(num_fc, relu),
               Parallel(vcat, x -> x,  
-                       Chain(Dense(num_fc, num_classes), x -> softmax(x))));
+                       Chain(Dense(num_fc, num_classes), x -> softmax(x)))) |> gpu;
+
+# Old model without residual connections
+# model = Chain(Conv((5, 3, 3), 1 => 16),   # 
+#               BatchNorm(16, relu),
+#               Conv((5, 3, 3), 16 => 64),  # 
+#               BatchNorm(64, relu),
+#               Conv((5, 3, 3), 64 => 64),  # 
+#               BatchNorm(64, relu),
+#               Conv((5, 1, 1), 64 => 64),
+#               BatchNorm(64, relu),                    # 8x2x4x64
+#               Conv((5, 1, 1), 64 => 64),
+#               BatchNorm(64, relu),
+#               x -> Flux.flatten(x),
+#               Dense(4 * 2 * 2 * 64, num_fc),
+#               #Dense(5 * num_fc, num_fc, relu),
+#               BatchNorm(num_fc, relu),
+#               Parallel(vcat, x -> x,  
+#                        Chain(Dense(num_fc, num_classes), x -> softmax(x))));
+
+
 
 model = model |> gpu;
 
 ps_all = Flux.params(model);
-opt_all = ADAM(1e-3) # (0.9, 0.999), 1e-4)
+opt_all = ADAM(lr)
 σₖ = 10.0f0;
 
 all_loss_cs = zeros((length(loader) + 1) * num_epochs);
@@ -72,7 +113,7 @@ NMI_epoch = zeros(num_epochs);
 
 iter = 1;
 
-for epoch in 1:2
+for epoch in 1:num_epochs
     @show epoch
     for (x,y) in loader
         # Move batch to GPU (apply transformation happens lazily on CPU)
@@ -126,35 +167,42 @@ for epoch in 1:2
             end
             loss_cs + loss_simp + λ * loss_orth
         end
+
         grads = back(one(loss))
         Flux.update!(opt_all, ps_all, grads)
-        # Optimize CNN and FCN separately
-        #Flux.update!(opt_cnn, params_cnn, grads)
-        #Flux.update!(opt_fcn, params_fcn, grads)
         global iter += 1;
     end
 
-    # all_probs = model(data_trf)[end-2:end, :] |> cpu;
-    # labels_pred = [ix[1] for ix in argmax(all_probs, dims=1)][1,:]
+    # Show previsou batch average loss
+    @show mean(all_loss_cs[iter - length(loader) : iter]), mean(all_loss_simp[iter - length(loader):iter]), mean(all_loss_orth[iter - length(loader):iter])
 
-    # assignments_pred = GroundTruthResult(labels_pred)
-    # NMI_epoch[epoch] = mutualinfo(assignments_pred, assignments_true)
-    # @show NMI_epoch[epoch]
+    all_probs = model(x_all)[end-2:end, :] |> cpu;
+    labels_pred = [ix[1] for ix in argmax(all_probs, dims=1)][1,:]
+
+    assignments_pred = GroundTruthResult(labels_pred)
+    NMI_epoch[epoch] = mutualinfo(assignments_pred, assignments_true)
+    @show NMI_epoch[epoch]
 end
 
 
-# Transform entire dataset and predict classes
-(x_all, labels_true) = first(loader_all)
-assignments_true = GroundTruthResult(labels_true .+ 1)
-
-# Calculate assignments predicted by model
-x_all = Flux.unsqueeze(x_all, 4) |> gpu;
+# Transform entire dataset and predict classes.
 all_probs = model(x_all)[end - num_classes + 1:end, :] |> cpu;
 
 # Calculate normalized mututal information
 labels_pred = [ix[1] for ix in argmax(all_probs, dims=1)][1,:];
 assignments_pred = GroundTruthResult(labels_pred)
 nmi = mutualinfo(assignments_true, assignments_pred)
+
+# Calculate the confusion matrix
+cm = counts(assignments_true, assignments_pred)
+
+# The predicted class labels are arbitrary. To calculate cluster accuracry we need to 
+# find the permutation that maximizes the cluster accuracy sum(tr(cm)) / sum(cm)
+cm2 = -cm .+ maximum(cm)
+matching = Hungarian.munkres(cm2)
+ix_perm = [findfirst(Hungarian.munkres(cm2)[i, :].==Hungarian.STAR) for i = 1:3]
+cm_perm = cm[:, ix_perm]
+cluster_accuracy = sum(tr(cm_perm)) / sum(cm_perm)
 
 # Plot clustered dataset
 colors_true = ColorSchemes.Accent_3[labels_true .+ 1];
@@ -178,5 +226,7 @@ lines!(ax, 1.1 * ones(length(colors_pred)), linewidth=20, color=colors_pred)
 text!(1.0, 0.95, text="True", align=(:left, :bottom), fontsize=16)
 text!(1.0, 1.15, text="Predicted", aligh=(:left, :top), fontsize=16)
 
-save("$(shotnr)_pred_vs_true.png", fig)
+save("plots/$(shotnr)_pred_vs_true.png", fig)
+
+
 # End of file train_kstar_wrapped.jl
