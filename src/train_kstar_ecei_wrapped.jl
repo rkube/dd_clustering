@@ -13,20 +13,30 @@ using Statistics
 using StatsBase
 using Zygote
 
+
+struct GroundTruthResult <: ClusteringResult
+    assignments::Vector{Int}   # assignments (n)
+end
+
 # User-defined packages
 using dd_clustering
 push!(LOAD_PATH, "/home/rkube/repos/kstar_ecei_data")
 using kstar_ecei_data
 
 # Instantiate dataset
-
 shotnr = 26512
 wrap_frames = 16
+
+num_epochs = 10     # Training epochs
+λ = 1f-1;           # Weighting of orthogonality loss
+
 trf = GaussianBlur(3)
 my_ds = kstar_ecei_3d(shotnr, wrap_frames, trf)
 
-
+# Loads training data
 loader = DataLoader(my_ds, batchsize=16, shuffle=true)
+# Load all data
+loader_all = DataLoader(my_ds, batchsize=size(my_ds.features, 4), shuffle=false)
 
 (x,y) = first(loader)
 
@@ -45,31 +55,27 @@ model = Chain(Conv((5, 3, 3), 1 => 16, relu),   #
               x -> Flux.flatten(x),
               Dense(8 * 2 * 4 * 64, num_fc, relu),
               #Dense(5 * num_fc, num_fc, relu),
-              BatchNorm(num_fc),
-              Parallel(vcat, x -> x,  Chain( Dense(num_fc, num_classes), x -> softmax(x))));
+              #BatchNorm(num_fc),
+              Parallel(vcat, x -> x,  
+                       Chain(Dense(num_fc, num_classes), x -> softmax(x))));
 
 model = model |> gpu;
 
-
-
 ps_all = Flux.params(model);
-opt_all = AdamW(1e-4, (0.9, 0.999), 1e-4)
+opt_all = ADAM(1e-3) # (0.9, 0.999), 1e-4)
 σₖ = 10.0f0;
 
-all_loss_cs = zeros(length(loader) * num_epochs);
-all_loss_simp = zeros(length(loader) * num_epochs);
-all_loss_orth = zeros(length(loader) * num_epochs);
-NMI_epoch = zeros(num_epochs)
+all_loss_cs = zeros((length(loader) + 1) * num_epochs);
+all_loss_simp = zeros((length(loader) + 1) * num_epochs);
+all_loss_orth = zeros((length(loader) + 1) * num_epochs);
+NMI_epoch = zeros(num_epochs);
 
-num_epochs = 20
 iter = 1;
-λ = 1f-4;
 
-for epoch in 1:num_epochs
+for epoch in 1:2
     @show epoch
     for (x,y) in loader
         # Move batch to GPU (apply transformation happens lazily on CPU)
-
         x = Flux.unsqueeze(x, 4) |> gpu;
         this_batch = size(x)[end]
         loss, back = Zygote.pullback(ps_all) do 
@@ -86,22 +92,11 @@ for epoch in 1:num_epochs
             g = diag(G)
             distances_squared = repeat(g, 1, this_batch) - 2f0 * G + repeat(g', this_batch, 1)
 
-            # xyT = y_hidden' * y_hidden
-            # x2 = sum(y_hidden.^2, dims=1)
             # distances_squared2 = x2' .- 2xyT + repeat(x2, this_batch)
             Zygote.ignore() do
-                global σₖ = 0.15f0 * median(distances_squared);
+                global σₖ = max(0.15f0 * median(distances_squared), 1f-2);
             end
             K = exp.(-0.5f0 .* distances_squared / σₖ / σₖ)
-
-            # Calculate the matrix M.
-            # M_q,i = ||α_q - e_i||^2 with a_q the class probability of a sample and e_i the i-th corner of the simplex
-            # use ||α - e||² = ||α||² + ||e||² - <α,e>. Note that ||e||² = 1
-            #xyT = A' * CUDA.CuArray(one(zeros(Float32, num_classes, num_classes)))
-            #xyT = A' * one(zeros(Float32, num_classes, num_classes))
-            #x2 = sum(A.^2, dims=1);
-            #y2 = ones(num_classes)' |> gpu;  # This is ||e||² = 1.
-            #M = exp.(-x2' .+ 2xyT - repeat(y2, this_batch))' 
 
             α2 = sum(A.^2, dims=1)       # = ||α||²
             # Note that <α,e> === A
@@ -148,5 +143,40 @@ for epoch in 1:num_epochs
 end
 
 
+# Transform entire dataset and predict classes
+(x_all, labels_true) = first(loader_all)
+assignments_true = GroundTruthResult(labels_true .+ 1)
 
+# Calculate assignments predicted by model
+x_all = Flux.unsqueeze(x_all, 4) |> gpu;
+all_probs = model(x_all)[end - num_classes + 1:end, :] |> cpu;
+
+# Calculate normalized mututal information
+labels_pred = [ix[1] for ix in argmax(all_probs, dims=1)][1,:];
+assignments_pred = GroundTruthResult(labels_pred)
+nmi = mutualinfo(assignments_true, assignments_pred)
+
+# Plot clustered dataset
+colors_true = ColorSchemes.Accent_3[labels_true .+ 1];
+colors_pred = ColorSchemes.Accent_3[labels_pred];
+
+
+group_color = [PolyElement(color=ColorSchemes.Accent_3[i]) for i ∈ 1:3];
+group_name = ["noise", "filaments", "crash"]
+
+title_str = "Shot $(shotnr) - Accuracy = " * string(round(cluster_accuracy, digits=3)) * ", NMI = " * string(round(nmi, digits=3))
+
+
+fig = Figure()
+ax = Axis(fig[1, 1], xlabel="Index", title=title_str)
+ylims!(ax, 0.9, 1.2)
+
+leg = Legend(fig, group_color, group_name)
+fig[1, 2] = leg
+lines!(ax, ones(length(colors_true)), linewidth=20, color=colors_true)
+lines!(ax, 1.1 * ones(length(colors_pred)), linewidth=20, color=colors_pred)
+text!(1.0, 0.95, text="True", align=(:left, :bottom), fontsize=16)
+text!(1.0, 1.15, text="Predicted", aligh=(:left, :top), fontsize=16)
+
+save("$(shotnr)_pred_vs_true.png", fig)
 # End of file train_kstar_wrapped.jl
