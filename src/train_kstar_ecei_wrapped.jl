@@ -27,10 +27,10 @@ using kstar_ecei_data
 shotnr = 26512
 wrap_frames = 8
 
-num_epochs = 10     # Training epochs
+num_epochs = 30     # Training epochs
 lr = 1e-3           # learning rate
-batch_size = 32     # batch size
-λ = 1f-1;           # Weighting of orthogonality loss
+batch_size = 64     # batch size
+λ = 6f-2;           # Weighting of orthogonality loss
 
 trf = GaussianBlur(3)
 my_ds = kstar_ecei_3d(shotnr, wrap_frames, trf)
@@ -47,6 +47,54 @@ x_all = Flux.unsqueeze(x_all, 4);
 f, a, h = hist(x_all[:], bins=-2.5:0.01:2.5);
 save("plots/hist_x_all.png", f)
 x_all = x_all |> gpu;
+
+
+function evaluate(model, x_all, assignments_true, epoch)
+    # Transform entire dataset and predict classes.
+    all_probs = model(x_all)[end - num_classes + 1:end, :] |> cpu;
+
+    # Calculate normalized mututal information
+    labels_pred = [ix[1] for ix in argmax(all_probs, dims=1)][1,:];
+    assignments_pred = GroundTruthResult(labels_pred)
+    nmi = mutualinfo(assignments_true, assignments_pred)
+
+    # Calculate the confusion matrix
+    cm = counts(assignments_true, assignments_pred)
+
+    # The predicted class labels are arbitrary. To calculate cluster accuracry we need to 
+    # find the permutation that maximizes the cluster accuracy sum(tr(cm)) / sum(cm)
+    cm2 = -cm .+ maximum(cm)
+    matching = Hungarian.munkres(cm2)
+    ix_perm = [findfirst(Hungarian.munkres(cm2)[i, :].==Hungarian.STAR) for i = 1:3]
+    cm_perm = cm[:, ix_perm]
+    cluster_accuracy = sum(tr(cm_perm)) / sum(cm_perm)
+
+    # Plot clustered dataset
+    colors_true = ColorSchemes.Accent_3[labels_true .+ 1];
+    colors_pred = ColorSchemes.Accent_3[labels_pred];
+
+    group_color = [PolyElement(color=ColorSchemes.Accent_3[i]) for i ∈ 1:3];
+    group_name = ["noise", "filaments", "crash"]
+
+    title_str = "Shot $(shotnr) - Accuracy = " * string(round(cluster_accuracy, digits=3)) * ", NMI = " * string(round(nmi, digits=3))
+
+
+    fig = Figure()
+    ax = Axis(fig[1, 1], xlabel="Index", title=title_str)
+    ylims!(ax, 0.9, 1.2)
+
+    leg = Legend(fig, group_color, group_name)
+    fig[1, 2] = leg
+    lines!(ax, ones(length(colors_true)), linewidth=20, color=colors_true)
+    lines!(ax, 1.1 * ones(length(colors_pred)), linewidth=20, color=colors_pred)
+    text!(1.0, 0.95, text="True", align=(:left, :bottom), fontsize=16)
+    text!(1.0, 1.15, text="Predicted", aligh=(:left, :top), fontsize=16)
+
+    save("plots/$(shotnr)_epoch" * lpad(string(epoch), 2, '0')* "_pred_vs_true.png", fig)
+
+    return nmi
+end
+
 
 
 num_fc = 100
@@ -99,11 +147,9 @@ model = Chain(Conv((5, 3, 3), 1 => 16),   #
 #                        Chain(Dense(num_fc, num_classes), x -> softmax(x))));
 
 
-
-model = model |> gpu;
-
 ps_all = Flux.params(model);
-opt_all = ADAM(lr)
+#opt_all = AdamW(lr, (0.9, 0.999), 1e-4)
+opt_all = Flux.Optimiser(ADAM(lr), ExpDecay(1.0, 0.1, 5, 1e-4))
 σₖ = 10.0f0;
 
 all_loss_cs = zeros((length(loader) + 1) * num_epochs);
@@ -156,7 +202,6 @@ for epoch in 1:num_epochs
             loss_simp = sum(triu(nom_simp ./ sqrt.(dnom_simp .+ eps(eltype(dnom_simp))), 1)) / num_classes
             
             # Enforces balanced class distribution
-            #loss_orth = 2f0 * sum(triu(A' * A, 1)) / (this_batch * (this_batch -1))
             loss_orth = sum(triu(A' * A, 1))
 
             #@show loss_cs, loss_simp,loss_orth, σ
@@ -182,51 +227,11 @@ for epoch in 1:num_epochs
     assignments_pred = GroundTruthResult(labels_pred)
     NMI_epoch[epoch] = mutualinfo(assignments_pred, assignments_true)
     @show NMI_epoch[epoch]
+
+    evaluate(model, x_all, assignments_true, epoch)
 end
 
 
-# Transform entire dataset and predict classes.
-all_probs = model(x_all)[end - num_classes + 1:end, :] |> cpu;
-
-# Calculate normalized mututal information
-labels_pred = [ix[1] for ix in argmax(all_probs, dims=1)][1,:];
-assignments_pred = GroundTruthResult(labels_pred)
-nmi = mutualinfo(assignments_true, assignments_pred)
-
-# Calculate the confusion matrix
-cm = counts(assignments_true, assignments_pred)
-
-# The predicted class labels are arbitrary. To calculate cluster accuracry we need to 
-# find the permutation that maximizes the cluster accuracy sum(tr(cm)) / sum(cm)
-cm2 = -cm .+ maximum(cm)
-matching = Hungarian.munkres(cm2)
-ix_perm = [findfirst(Hungarian.munkres(cm2)[i, :].==Hungarian.STAR) for i = 1:3]
-cm_perm = cm[:, ix_perm]
-cluster_accuracy = sum(tr(cm_perm)) / sum(cm_perm)
-
-# Plot clustered dataset
-colors_true = ColorSchemes.Accent_3[labels_true .+ 1];
-colors_pred = ColorSchemes.Accent_3[labels_pred];
-
-
-group_color = [PolyElement(color=ColorSchemes.Accent_3[i]) for i ∈ 1:3];
-group_name = ["noise", "filaments", "crash"]
-
-title_str = "Shot $(shotnr) - Accuracy = " * string(round(cluster_accuracy, digits=3)) * ", NMI = " * string(round(nmi, digits=3))
-
-
-fig = Figure()
-ax = Axis(fig[1, 1], xlabel="Index", title=title_str)
-ylims!(ax, 0.9, 1.2)
-
-leg = Legend(fig, group_color, group_name)
-fig[1, 2] = leg
-lines!(ax, ones(length(colors_true)), linewidth=20, color=colors_true)
-lines!(ax, 1.1 * ones(length(colors_pred)), linewidth=20, color=colors_pred)
-text!(1.0, 0.95, text="True", align=(:left, :bottom), fontsize=16)
-text!(1.0, 1.15, text="Predicted", aligh=(:left, :top), fontsize=16)
-
-save("plots/$(shotnr)_pred_vs_true.png", fig)
 
 
 # End of file train_kstar_wrapped.jl
