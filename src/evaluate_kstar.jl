@@ -1,15 +1,22 @@
 using CairoMakie
 using ColorSchemes
 using Clustering
-using Hungarianu
+using LinearAlgebra
+using Hungarian
 
+export GroundTruthResult, get_labels_predicted, get_clsuter_accuracy, plot_eval_wrapped
+
+
+struct GroundTruthResult <: ClusteringResult
+    assignments::Vector{Int}   # assignments (n)
+end
 
 """
     get_labels_predicted(model, x_all)
 
 Returns predicted labels from a trained model.
 """
-function get_labels_predicted(model, x_all)
+function get_labels_predicted(model, x_all, num_classes)
     # Transform entire dataset and predict classes.
     all_probs = model(x_all)[end - num_classes + 1:end, :] |> cpu;
 
@@ -48,10 +55,11 @@ end
     2. Predicted labels
 """
 
-function plot_eval_wrapped(model, x_all, assignments_true, epoch)
+function plot_eval_wrapped(model, x_all, assignments_true, shotnr)
 
+    num_classes = maximum(assignments_true.assignments)
     # Get predicted assignments
-    assignments_pred = get_labels_predicted(model, x_all)
+    assignments_pred = get_labels_predicted(model, x_all, num_classes)
     # Get nmi
     nmi = mutualinfo(assignments_true, assignments_pred)
     # Get cluster accuracy
@@ -83,8 +91,6 @@ function plot_eval_wrapped(model, x_all, assignments_true, epoch)
     lines!(ax, signal_shift, color=colors_pred)
     #text!(1.0, 0.95, text="True", align=(:left, :bottom), fontsize=16)
     #text!(1.0, 1.15, text="Predicted", aligh=(:left, :top), fontsize=16)
-
-    save("plots/$(shotnr)_epoch" * lpad(string(epoch), 2, '0')* "_pred_vs_true.png", fig)
 
     return fig
 end
