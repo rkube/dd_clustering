@@ -44,56 +44,13 @@ loader_all = DataLoader(my_ds, batchsize=size(my_ds.features, 4), shuffle=false,
 (x_all, labels_true) = first(loader_all)
 assignments_true = GroundTruthResult(labels_true .+ 1)
 x_all = Flux.unsqueeze(x_all, 4);
-f, a, h = hist(x_all[:], bins=-2.5:0.01:2.5);
-save("plots/hist_x_all.png", f)
+# f, a, h = hist(x_all[:], bins=-2.5:0.01:2.5);
+# save("plots/hist_x_all.png", f)
 x_all = x_all |> gpu;
 
 
-function evaluate(model, x_all, assignments_true, epoch)
-    # Transform entire dataset and predict classes.
-    all_probs = model(x_all)[end - num_classes + 1:end, :] |> cpu;
-
-    # Calculate normalized mututal information
-    labels_pred = [ix[1] for ix in argmax(all_probs, dims=1)][1,:];
-    assignments_pred = GroundTruthResult(labels_pred)
-    nmi = mutualinfo(assignments_true, assignments_pred)
-
-    # Calculate the confusion matrix
-    cm = counts(assignments_true, assignments_pred)
-
-    # The predicted class labels are arbitrary. To calculate cluster accuracry we need to 
-    # find the permutation that maximizes the cluster accuracy sum(tr(cm)) / sum(cm)
-    cm2 = -cm .+ maximum(cm)
-    matching = Hungarian.munkres(cm2)
-    ix_perm = [findfirst(Hungarian.munkres(cm2)[i, :].==Hungarian.STAR) for i = 1:3]
-    cm_perm = cm[:, ix_perm]
-    cluster_accuracy = sum(tr(cm_perm)) / sum(cm_perm)
-
-    # Plot clustered dataset
-    colors_true = ColorSchemes.Accent_3[labels_true .+ 1];
-    colors_pred = ColorSchemes.Accent_3[labels_pred];
-
-    group_color = [PolyElement(color=ColorSchemes.Accent_3[i]) for i ∈ 1:3];
-    group_name = ["noise", "filaments", "crash"]
-
-    title_str = "Shot $(shotnr) - Accuracy = " * string(round(cluster_accuracy, digits=3)) * ", NMI = " * string(round(nmi, digits=3))
 
 
-    fig = Figure()
-    ax = Axis(fig[1, 1], xlabel="Index", title=title_str)
-    ylims!(ax, 0.9, 1.2)
-
-    leg = Legend(fig, group_color, group_name)
-    fig[1, 2] = leg
-    lines!(ax, ones(length(colors_true)), linewidth=20, color=colors_true)
-    lines!(ax, 1.1 * ones(length(colors_pred)), linewidth=20, color=colors_pred)
-    text!(1.0, 0.95, text="True", align=(:left, :bottom), fontsize=16)
-    text!(1.0, 1.15, text="Predicted", aligh=(:left, :top), fontsize=16)
-
-    save("plots/$(shotnr)_epoch" * lpad(string(epoch), 2, '0')* "_pred_vs_true.png", fig)
-
-    return nmi
-end
 
 
 
