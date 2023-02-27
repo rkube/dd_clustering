@@ -37,7 +37,7 @@ num_epochs = 100
 batch_size = 256
 
 data_norm, tbase_norm = get_shot_data(26327)
-
+num_samples = size(data_norm)[end]
 # Re-shape data to fit number of samples
 # num_samples = size(data_norm)[end] ÷ num_frames
 # data_trf = reshape(data_norm[:, :, 1:(num_samples * num_frames)], (24, 8, num_frames, num_samples));
@@ -50,17 +50,14 @@ data_norm, tbase_norm = get_shot_data(26327)
 
 
 # Alternative idea:
-num_samples = size(data_norm)[end]
-# Calculate first and second derivative of image time-series manually
-data_deriv1 = data_norm[:, :, 3:end] .- data_norm[:, :, 1:end-2];
-
-data_deriv2 = data_norm[:, :, 1:end-2] .- 2f0 * data_norm[:, :, 2:end-1] .+ data_norm[:, :, 3:end];
-
 # Stack data, first, and second derivative
 data_trf = zeros(Float32, 24, 8, 3, 1, num_samples-2)
-data_trf[:, :, 1, 1, :] = (data_norm[:, :, 2:end-1] .- mean(data_norm)) ./ std(data_norm);
-data_trf[:, :, 2, 1, :] = (data_deriv1 .- mean(data_deriv1)) ./ std(data_deriv1);
-data_trf[:, :, 3, 1, :] = (data_deriv2 .- mean(data_deriv2)) ./ std(data_deriv2);
+data_trf[:, :, 1, 1, :] = data_norm[:, :, 2:end-1] 
+data_trf[:, :, 2, 1, :] = data_norm[:, :, 3:end] .- data_norm[:, :, 1:end-2]; 
+data_trf[:, :, 3, 1, :] = data_norm[:, :, 1:end-2] .- 2f0 * data_norm[:, :, 2:end-1] .+ data_norm[:, :, 3:end];
+
+
+data_trf = (data_trf .- mean(data_trf, dims=(1, 2, 5))) ./ std(data_trf, dims=(1,2,5))
 
 f, a, p = hist(data_trf[:], bins=-10.0:0.1:1.0)
 save("hist_trf_$(shotnr).png", f)
@@ -188,7 +185,7 @@ for epoch in 1:num_epochs
                 all_loss_simp[iter] = loss_simp 
                 all_loss_orth[iter] = loss_orth
             end
-            loss_cs + loss_simp + λ * loss_orth
+            loss = loss_cs + loss_simp + λ * loss_orth
         end
         grads = back(one(loss))
         Flux.update!(opt, ps_all, grads)
