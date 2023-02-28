@@ -1,12 +1,14 @@
 # Train on frame-wrapped KSTAR ELM dataset
+
 using Augmentor
+using BSON
 using CairoMakie
-using Clustering
-using ColorSchemes
+using Clustering: mutualinfo
+#using ColorSchemes
 using CUDA
 using Flux
 using Flux.Data: DataLoader
-using Hungarian
+#using Hungarian
 using LinearAlgebra
 using Random
 using Statistics
@@ -14,9 +16,7 @@ using StatsBase
 using Zygote
 
 
-struct GroundTruthResult <: ClusteringResult
-    assignments::Vector{Int}   # assignments (n)
-end
+
 
 # User-defined packages
 using dd_clustering
@@ -27,10 +27,10 @@ using kstar_ecei_data
 shotnr = 26512
 wrap_frames = 8
 
-num_epochs = 30     # Training epochs
+num_epochs = 10     # Training epochs
 lr = 1e-3           # learning rate
 batch_size = 64     # batch size
-λ = 6f-2;           # Weighting of orthogonality loss
+λ = 1.5f-3;           # Weighting of orthogonality loss
 
 trf = GaussianBlur(3)
 my_ds = kstar_ecei_3d(shotnr, wrap_frames, trf)
@@ -49,18 +49,13 @@ x_all = Flux.unsqueeze(x_all, 4);
 x_all = x_all |> gpu;
 
 
-
-
-
-
-
 num_fc = 100
 num_classes = 3
 
 
 model = Chain(Conv((5, 3, 3), 1 => 16),   # 
               BatchNorm(16, relu),
-              Conv((7, 3, 3), 16 => 64),  # 
+              Conv((5, 3, 3), 16 => 64),  # 
               BatchNorm(64, relu),
               # Put in some skip connections
               SkipConnection(Chain(Conv((3, 3, 3), 64 => 64, pad=(1,1,1)),
@@ -77,13 +72,23 @@ model = Chain(Conv((5, 3, 3), 1 => 16),   #
                              +),
 
               BatchNorm(64, relu),
-              Conv((5, 1, 1), 64 => 64),
+              Conv((7, 1, 1), 64 => 64),
               x -> Flux.flatten(x),
+              Dropout(0.2),
               Dense(4 * 2 * 2 * 64, num_fc),
               #Dense(5 * num_fc, num_fc, relu),
               BatchNorm(num_fc, relu),
               Parallel(vcat, x -> x,  
                        Chain(Dense(num_fc, num_classes), x -> softmax(x)))) |> gpu;
+
+
+# Plot performance of randomly initialized model
+epoch = 0
+fig = plot_eval_wrapped(model, x_all, assignments_true, shotnr)
+save("plots/$(shotnr)_epoch" * lpad(string(epoch), 2, '0')* "_pred_vs_true.png", fig)
+assignments_pred = get_labels_predicted(model, x_all, num_classes);
+class_counts = [count(x -> x == i, assignments_pred.assignments) for i ∈ 1:num_classes]
+
 
 # Old model without residual connections
 # model = Chain(Conv((5, 3, 3), 1 => 16),   # 
@@ -105,8 +110,8 @@ model = Chain(Conv((5, 3, 3), 1 => 16),   #
 
 
 ps_all = Flux.params(model);
-#opt_all = AdamW(lr, (0.9, 0.999), 1e-4)
-opt_all = Flux.Optimiser(ADAM(lr), ExpDecay(1.0, 0.1, 5, 1e-4))
+opt_all = AdamW(lr, (0.9, 0.999), 1e-4)
+#opt_all = Flux.Optimiser(ADAM(lr), ExpDecay(1.0, 0.1, 5, 1e-4))
 σₖ = 10.0f0;
 
 all_loss_cs = zeros((length(loader) + 1) * num_epochs);
@@ -117,7 +122,6 @@ NMI_epoch = zeros(num_epochs);
 iter = 1;
 
 for epoch in 1:num_epochs
-    @show epoch
     for (x,y) in loader
         # Move batch to GPU (apply transformation happens lazily on CPU)
         x = Flux.unsqueeze(x, 4) |> gpu;
@@ -178,16 +182,19 @@ for epoch in 1:num_epochs
     # Show previsou batch average loss
     @show mean(all_loss_cs[iter - length(loader) : iter]), mean(all_loss_simp[iter - length(loader):iter]), mean(all_loss_orth[iter - length(loader):iter])
 
-    all_probs = model(x_all)[end-2:end, :] |> cpu;
-    labels_pred = [ix[1] for ix in argmax(all_probs, dims=1)][1,:]
-
-    assignments_pred = GroundTruthResult(labels_pred)
+    assignments_pred = get_labels_predicted(model, x_all, num_classes)
+    class_counts = [count(x -> x == i, assignments_pred.assignments) for i ∈ 1:num_classes]
     NMI_epoch[epoch] = mutualinfo(assignments_pred, assignments_true)
-    @show NMI_epoch[epoch]
+    @show NMI_epoch[epoch], class_counts
 
-    evaluate(model, x_all, assignments_true, epoch)
+    #evaluate(model, x_all, assignments_true, epoch)
+    fig = plot_eval_wrapped(model, x_all, assignments_true, shotnr)
+    save("plots/$(shotnr)_epoch" * lpad(string(epoch), 2, '0')* "_pred_vs_true.png", fig)
 end
 
+
+model_cpu = model |> cpu;
+BSON.@save "models/model_clf_v10.bson" model_cpu
 
 
 
